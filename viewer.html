@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
-    <title>AI Avatar Viewer (Robust Loader)</title>
+    <title>AI Avatar Viewer (Direct WebRTC)</title>
     <style>
       html,body{margin:0;padding:0;height:100%;width:100%;background:#0b0b0c;color:#eaeaea;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
       .wrap{display:flex;flex-direction:column;gap:10px;width:100%;height:100%;align-items:center;justify-content:flex-start}
@@ -11,15 +11,13 @@
       .stage{width:100%;max-width:420px;aspect-ratio:9/16;background:#111;border-radius:18px;overflow:hidden;border:1px solid #222;display:grid;place-items:center}
       video{width:100%;height:100%;object-fit:cover;display:block}
       .status{font-size:12px;opacity:.85}
-      .log{width:100%;max-width:420px;background:#0f0f10;border:1px solid #1f1f22;border-radius:12px;padding:8px;font-size:12px;line-height:1.35;overflow:auto;max-height:180px}
+      .log{width:100%;max-width:420px;background:#0f0f10;border:1px solid #1f1f22;border-radius:12px;padding:8px;font-size:12px;line-height:1.35;overflow:auto;max-height:220px}
       .muted{opacity:.7}
       .ok{color:#9fff9f}
       .warn{color:#ffd48a}
       .err{color:#ff9f9f}
-      code{font-family:ui-monospace,SFMono-Regular,Consolas,Monaco,monospace}
+      code{font-family:ui-monospace,SFMono-Regular,Consolas,Monaco,monospace; white-space:pre-wrap}
     </style>
-    <!-- LiveKit UMD (SDK uses it) -->
-    <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
   </head>
   <body>
     <div class="wrap">
@@ -34,14 +32,14 @@
       const SESSION_TOKEN = "__SESSION_TOKEN__";
       const AVATAR_NAME   = "__AVATAR_NAME__";
       const SESSION_ID    = "__SESSION_ID__";
+      const OFFER_SDP     = "__OFFER_SDP__"; // raw SDP text from streaming.new
 
       document.getElementById("aname").textContent = AVATAR_NAME;
 
       const statusEl = document.getElementById("status");
       const logEl = document.getElementById("log");
       const setStatus = (t)=> statusEl.textContent = t;
-      const short = (s, n=8)=> (s||"").slice(0,n);
-
+      const short = (s, n=10)=> (s||"").slice(0,n);
       function log(type, msg){
         const div = document.createElement("div");
         div.className = type;
@@ -51,106 +49,93 @@
         (type==="err"?console.error:type==="warn"?console.warn:console.log)(msg);
       }
 
-      log("muted", `avatar="${AVATAR_NAME}", sid="${short(SESSION_ID)}…", token="${short(SESSION_TOKEN,12)}…"`);
-      setStatus("loading SDK…");
+      log("muted", `sid="${short(SESSION_ID)}…", token="${short(SESSION_TOKEN,12)}…"`);
 
-      // Try multiple sources (pinned versions + ESM transforms)
-      async function loadHeyGenSDK(){
-        if (window.HeyGen?.StreamingAvatar) {
-          log("ok","Found window.HeyGen.StreamingAvatar (already present)");
-          return window.HeyGen.StreamingAvatar;
+      // ---- DIRECT WEBRTC, NO SDK ----
+      // 1) RTCPeerConnection with default STUN; HeyGen/LiveKit provides ICE in its SDP.
+      const pc = new RTCPeerConnection();
+
+      // Attach remote tracks
+      const video = document.getElementById("video");
+      pc.ontrack = (ev) => {
+        const [stream] = ev.streams;
+        if (stream) {
+          video.srcObject = stream;
+          video.muted = true;
+          video.play().catch(()=>{});
+          log("ok","ontrack — remote stream attached");
         }
+      };
 
-        // 1) Pinned UMD builds (prefer these)
-        const umdCandidates = [
-          "https://cdn.jsdelivr.net/npm/@heygen/streaming-avatar@2.1.0/dist/index.global.js",
-          "https://unpkg.com/@heygen/streaming-avatar@2.1.0/dist/index.global.js",
-        ];
-        for (const url of umdCandidates){
-          try{
-            log("muted", `Loading UMD: ${url}`);
-            await new Promise((resolve, reject) => {
-              const s = document.createElement("script");
-              s.src = url; s.async = true;
-              s.onload = resolve; s.onerror = (e)=>reject(new Error(e?.message||"[UMD load error]"));
-              document.head.appendChild(s);
-            });
-            if (window.HeyGen?.StreamingAvatar){
-              log("ok", `UMD ready from ${url}`);
-              return window.HeyGen.StreamingAvatar;
-            } else {
-              log("warn", `UMD loaded but window.HeyGen undefined from ${url}`);
-            }
-          }catch(e){
-            log("warn", `UMD load failed: ${url} :: ${e}`);
-          }
+      pc.oniceconnectionstatechange = () => {
+        log("muted", `iceConnectionState=${pc.iceConnectionState}`);
+        if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+          setStatus("connected");
+        } else if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
+          setStatus("ice " + pc.iceConnectionState);
         }
+      };
 
-        // 2) ESM transforms via cdn helpers (convert CJS/ESM to browser ESM)
-        const esmCandidates = [
-          // esm.run bundles for browser (often best in sandboxes)
-          "https://esm.run/@heygen/streaming-avatar@2.1.0",
-          "https://esm.run/@heygen/streaming-avatar",
-          // esm.sh also works well
-          "https://esm.sh/@heygen/streaming-avatar@2.1.0?bundle",
-          "https://esm.sh/@heygen/streaming-avatar?bundle",
-        ];
-        for (const url of esmCandidates){
-          try{
-            log("muted", `Importing ESM: ${url}`);
-            const mod = await import(/* @vite-ignore */ url);
-            const Cls = mod?.StreamingAvatar || mod?.default || (mod?.HeyGen && mod.HeyGen.StreamingAvatar);
-            if (Cls){
-              log("ok", `ESM ready from ${url}`);
-              return Cls;
-            } else {
-              log("warn", `ESM imported but class not found: ${url}`);
-            }
-          }catch(e){
-            log("warn", `ESM import failed: ${url} :: ${e}`);
-          }
-        }
-
-        throw new Error("HeyGen StreamingAvatar SDK not found on any mirror.");
-      }
+      pc.onsignalingstatechange = () => {
+        log("muted", `signalingState=${pc.signalingState}`);
+      };
 
       (async () => {
-        try{
-          const StreamingAvatar = await loadHeyGenSDK();
+        try {
+          setStatus("applying offer…");
+          await pc.setRemoteDescription({ type: "offer", sdp: OFFER_SDP });
+          log("ok","remote offer applied");
 
-          setStatus("connecting…");
-          log("muted", "Creating StreamingAvatar with session token…");
-          const avatar = new StreamingAvatar({ token: SESSION_TOKEN });
+          setStatus("creating answer…");
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
 
-          avatar.on?.("stream.ready", (ev) => {
-            const video = document.getElementById("video");
-            video.srcObject = ev.stream;
-            video.muted = true;
-            video.play().catch(()=>{});
-            setStatus("connected");
-            log("ok", "stream.ready — viewer attached.");
+          // Wait for ICE gathering to complete so we send a full SDP
+          await new Promise((resolve) => {
+            if (pc.iceGatheringState === "complete") return resolve();
+            const check = () => {
+              if (pc.iceGatheringState === "complete") {
+                pc.removeEventListener("icegatheringstatechange", check);
+                resolve();
+              }
+            };
+            pc.addEventListener("icegatheringstatechange", check);
+            // safety timeout
+            setTimeout(resolve, 1500);
           });
 
-          avatar.on?.("stream.disconnected", () => {
-            setStatus("disconnected");
-            log("warn", "stream.disconnected");
+          setStatus("starting session…");
+          const payload = {
+            session_id: SESSION_ID,
+            sdp: { type: "answer", sdp: pc.localDescription.sdp }
+          };
+
+          const res = await fetch("https://api.heygen.com/v1/streaming.start", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${SESSION_TOKEN}`,
+              "Content-Type": "application/json",
+              "accept": "application/json"
+            },
+            body: JSON.stringify(payload)
           });
 
-          avatar.on?.("error", (e) => {
-            setStatus(`error`);
-            log("err", `SDK error: ${e?.message || e}`);
-          });
-
-          if (typeof avatar.connectWithToken === "function"){
-            log("muted", "Calling connectWithToken(token)…");
-            await avatar.connectWithToken(SESSION_TOKEN);
-            log("ok","connectWithToken resolved.");
+          const text = await res.text();
+          if (!res.ok) {
+            log("err", `[start] ${res.status} ${text}`);
+            setStatus("start failed");
+            return;
           } else {
-            await new Promise(r => setTimeout(r, 300));
+            log("ok", `[start] ${text.slice(0,120)}…`);
           }
-        }catch(err){
+
+          setStatus("waiting for media…");
+          // A small grace period for first frames
+          setTimeout(()=>log("muted","ready for tasks"), 500);
+
+        } catch (err) {
           setStatus("init error");
-          log("err", `Init error: ${err?.message || err}`);
+          log("err", `init error: ${err?.message || err}`);
         }
       })();
     </script>
