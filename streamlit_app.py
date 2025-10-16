@@ -1,5 +1,7 @@
 # Hey Gen-Stage.2-Ver.5
 # from openai import OpenAI
+
+
 import json
 import time
 from pathlib import Path
@@ -19,8 +21,8 @@ HEYGEN_API_KEY = st.secrets["HeyGen"]["heygen_api_key"]
 # ---------- Endpoints ----------
 BASE = "https://api.heygen.com/v1"
 API_LIST_AVATARS = f"{BASE}/streaming/avatar.list"    # GET  (x-api-key)
-API_STREAM_NEW   = f"{BASE}/streaming.new"            # POST (x-api-key) -> offer.sdp
-API_CREATE_TOKEN = f"{BASE}/streaming.create_token"   # POST (x-api-key) -> session token
+API_STREAM_NEW   = f"{BASE}/streaming.new"            # POST (x-api-key) -> data: session_id, sdp.offer
+API_CREATE_TOKEN = f"{BASE}/streaming.create_token"   # POST (x-api-key) -> data: token/access_token
 API_STREAM_TASK  = f"{BASE}/streaming.task"           # POST (Bearer)
 API_STREAM_STOP  = f"{BASE}/streaming.stop"           # POST (Bearer)
 
@@ -107,14 +109,37 @@ selected = next(a for a in avatars if a["label"] == choice)
 
 # ---------- Session helpers ----------
 def new_session(avatar_id: str):
-    """Return (session_id, offer_sdp)."""
+    """
+    Return dict with:
+      session_id: str
+      offer_sdp: str           (from data.offer.sdp OR data.sdp.sdp)
+      rtc_config: dict|None    (iceServers from data.ice_servers2/ice_servers)
+    """
     _, body, _ = _post_xapi(API_STREAM_NEW, {"avatar_id": avatar_id})
     data = body.get("data") or {}
+
     sid = data.get("session_id")
-    offer = (data.get("offer") or {}).get("sdp")
-    if not sid or not offer:
+
+    # Robust parse: some responses use data.offer.sdp, others data.sdp.sdp
+    offer_obj = data.get("offer") or data.get("sdp") or {}
+    offer_sdp = offer_obj.get("sdp")
+
+    # Optional ICE servers in various fields (prefer ice_servers2 if present)
+    ice2 = data.get("ice_servers2")
+    ice1 = data.get("ice_servers")
+    rtc_config = None
+    if isinstance(ice2, list) and ice2:
+        rtc_config = {"iceServers": ice2}
+    elif isinstance(ice1, list) and ice1:
+        rtc_config = {"iceServers": ice1}
+    else:
+        # fall back to public STUN; harmless if unused
+        rtc_config = {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+
+    if not sid or not offer_sdp:
         raise RuntimeError(f"Missing session_id or offer in response: {body}")
-    return sid, offer
+
+    return {"session_id": sid, "offer_sdp": offer_sdp, "rtc_config": rtc_config}
 
 def create_session_token(session_id: str) -> str:
     _, body, _ = _post_xapi(API_CREATE_TOKEN, {"session_id": session_id})
@@ -142,6 +167,7 @@ ss = st.session_state
 ss.setdefault("session_id", None)
 ss.setdefault("session_token", None)
 ss.setdefault("offer_sdp", None)
+ss.setdefault("rtc_config", None)
 
 # ---------- Controls ----------
 c1, c2 = st.columns(2)
@@ -151,15 +177,20 @@ with c1:
             stop_session(ss.session_id, ss.session_token)
             time.sleep(0.2)
 
-        sid, offer_sdp = new_session(selected["avatar_id"])
+        payload = new_session(selected["avatar_id"])
+        sid = payload["session_id"]
+        offer_sdp = payload["offer_sdp"]
+        rtc_config = payload["rtc_config"]
+
         tok = create_session_token(sid)
 
-        # small delay like your test5.py; also helps Streamlit Cloud iframes
+        # small delay (mirrors your test5.py)
         time.sleep(1.0)
 
         ss.session_id = sid
         ss.session_token = tok
         ss.offer_sdp = offer_sdp
+        ss.rtc_config = rtc_config
 
 with c2:
     if st.button("Stop", type="secondary", use_container_width=True):
@@ -168,6 +199,7 @@ with c2:
         ss.session_id = None
         ss.session_token = None
         ss.offer_sdp = None
+        ss.rtc_config = None
 
 # ---------- Viewer embed (pure WebRTC; no SDK) ----------
 viewer_path = Path(__file__).parent / "viewer.html"
@@ -180,9 +212,10 @@ else:
             .replace("__SESSION_TOKEN__", ss.session_token)
             .replace("__AVATAR_NAME__", selected["label"])
             .replace("__SESSION_ID__", ss.session_id)
-            .replace("__OFFER_SDP__", json.dumps(ss.offer_sdp)[1:-1])  # keep raw newlines
+            .replace("__OFFER_SDP__", json.dumps(ss.offer_sdp)[1:-1])  # raw newlines
+            .replace("__RTC_CONFIG__", json.dumps(ss.rtc_config or {}))
         )
-        components.html(html, height=640, scrolling=True)
+        components.html(html, height=660, scrolling=True)
     else:
         st.info("Click **Start / Restart** to open a session and load the viewer.")
 
