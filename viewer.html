@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
-    <title>AI Avatar Viewer (Direct WebRTC + Reliable Audio)</title>
+    <title>AI Avatar Viewer (Direct WebRTC + Audio)</title>
     <style>
       html,body{margin:0;padding:0;height:100%;width:100%;background:#0b0b0c;color:#eaeaea;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
       .wrap{display:flex;flex-direction:column;gap:10px;width:100%;height:100%;align-items:center;justify-content:flex-start}
@@ -11,12 +11,6 @@
       .stage{position:relative;width:100%;max-width:420px;aspect-ratio:9/16;background:#111;border-radius:18px;overflow:hidden;border:1px solid #222;display:grid;place-items:center}
       video{width:100%;height:100%;object-fit:cover;display:block}
       .status{font-size:12px;opacity:.85}
-      .log{width:100%;max-width:420px;background:#0f0f10;border:1px solid #1f1f22;border-radius:12px;padding:8px;font-size:12px;line-height:1.35;overflow:auto;max-height:240px}
-      .muted{opacity:.7}
-      .ok{color:#9fff9f}
-      .warn{color:#ffd48a}
-      .err{color:#ff9f9f}
-      code{font-family:ui-monospace,SFMono-Regular,Consolas,Monaco,monospace; white-space:pre-wrap}
       .overlay{
         position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
         background:rgba(0,0,0,0.35); backdrop-filter:saturate(1.1) blur(1px);
@@ -31,14 +25,13 @@
     <div class="wrap">
       <div class="title">Avatar: <span id="aname"></span></div>
       <div class="stage">
-        <!-- Video shows picture only; audio routed to a dedicated <audio> element -->
+        <!-- Video shows picture only; audio routed to dedicated <audio> element -->
         <video id="video" playsinline autoplay muted></video>
         <div class="overlay" id="audioGate" style="display:flex">
           <button id="enableBtn">🔊 Tap to enable sound</button>
         </div>
       </div>
       <div class="status" id="status">initializing…</div>
-      <div class="log" id="log"></div>
     </div>
 
     <audio id="audio" autoplay></audio>
@@ -48,56 +41,34 @@
       const SESSION_TOKEN = "__SESSION_TOKEN__";
       const AVATAR_NAME   = "__AVATAR_NAME__";
       const SESSION_ID    = "__SESSION_ID__";
-      const OFFER_SDP     = "__OFFER_SDP__";         // raw text from API
-      const RTC_CONFIG    = __RTC_CONFIG__ || {};    // {"iceServers":[...]}
-      const SHOW_OVERLAY  = true;                    // always show until unmuted succeeds
-
+      const OFFER_SDP     = "__OFFER_SDP__";          // raw text from API
+      const RTC_CONFIG    = __RTC_CONFIG__ || {};     // {"iceServers":[...]}
       document.getElementById("aname").textContent = AVATAR_NAME;
 
       const statusEl = document.getElementById("status");
-      const logEl = document.getElementById("log");
       const setStatus = (t)=> statusEl.textContent = t;
-      const short = (s, n=10)=> (s||"").slice(0,n);
-      function log(type, msg){
-        const div = document.createElement("div");
-        div.className = type;
-        div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-        logEl.appendChild(div);
-        logEl.scrollTop = logEl.scrollHeight;
-        (type==="err"?console.error:type==="warn"?console.warn:console.log)(msg);
-      }
-
-      log("muted", `sid="${short(SESSION_ID)}…", token="${short(SESSION_TOKEN,12)}…"`);
-      log("muted", `rtc_config=${JSON.stringify(RTC_CONFIG)}`);
 
       // ---- DIRECT WEBRTC (no SDK) ----
       const pc = new RTCPeerConnection(RTC_CONFIG);
 
-      // Explicitly receive both audio and video (helps Safari/iOS)
+      // Explicitly receive both audio and video
       try {
         pc.addTransceiver('audio', { direction: 'recvonly' });
         pc.addTransceiver('video', { direction: 'recvonly' });
-        log("muted","added recvonly transceivers for audio+video");
-      } catch (e) {
-        log("warn", "transceiver add failed (ok on some browsers): " + (e?.message || e));
-      }
+      } catch {}
 
       const video = document.getElementById("video");
       const audio = document.getElementById("audio");
       const gate  = document.getElementById("audioGate");
       const btn   = document.getElementById("enableBtn");
 
-      // Allow programmatic attempts to start audio; if blocked, show overlay for user tap.
       async function ensureAudio() {
         try {
           audio.muted = false;
           audio.volume = 1.0;
           await audio.play();
-          // leave video muted to satisfy autoplay; audio element carries the sound
-          log("ok","audio playing through <audio> element");
           gate.style.display = "none";
-        } catch (e) {
-          log("warn","autoplay with sound blocked; waiting for user tap");
+        } catch {
           gate.style.display = "flex";
         }
       }
@@ -107,34 +78,24 @@
           audio.muted = false;
           audio.volume = 1.0;
           await audio.play();
-          log("ok","user enabled sound");
           gate.style.display = "none";
-        } catch (e) {
-          log("err","could not start audio: " + (e?.name || e?.message || e));
-        }
+        } catch {}
       });
 
       pc.ontrack = (ev) => {
         const [stream] = ev.streams;
         if (!stream) return;
-
         if (ev.track.kind === 'video') {
           video.srcObject = stream;
           video.muted = true;           // picture only
           video.play().catch(()=>{});
-          log("ok","video track attached");
         } else if (ev.track.kind === 'audio') {
           audio.srcObject = stream;     // sound goes here
-          log("ok","audio track attached");
-          // Try to enable audio shortly after attaching (may still need tap)
           setTimeout(ensureAudio, 100);
-        } else {
-          log("warn", `other track kind: ${ev.track.kind}`);
         }
       };
 
       pc.oniceconnectionstatechange = () => {
-        log("muted", `iceConnectionState=${pc.iceConnectionState}`);
         if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
           setStatus("connected");
         } else if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
@@ -142,15 +103,10 @@
         }
       };
 
-      pc.onsignalingstatechange = () => {
-        log("muted", `signalingState=${pc.signalingState}`);
-      };
-
       (async () => {
         try {
           setStatus("applying offer…");
           await pc.setRemoteDescription({ type: "offer", sdp: OFFER_SDP });
-          log("ok","remote offer applied");
 
           setStatus("creating answer…");
           const answer = await pc.createAnswer();
@@ -170,36 +126,24 @@
           });
 
           setStatus("starting session…");
-          const payload = {
-            session_id: SESSION_ID,
-            sdp: { type: "answer", sdp: pc.localDescription.sdp }
-          };
-
-          const res = await fetch("https://api.heygen.com/v1/streaming.start", {
+          await fetch("https://api.heygen.com/v1/streaming.start", {
             method: "POST",
             headers: {
               "Authorization": `Bearer ${SESSION_TOKEN}`,
               "Content-Type": "application/json",
               "accept": "application/json"
             },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({
+              session_id: SESSION_ID,
+              sdp: { type: "answer", sdp: pc.localDescription.sdp }
+            })
           });
 
-          const text = await res.text();
-          if (!res.ok) {
-            log("err", `[start] ${res.status} ${text}`);
-            setStatus("start failed");
-            return;
-          } else {
-            log("ok", `[start] ${text.slice(0,120)}…`);
-          }
-
           setStatus("waiting for media…");
-          if (SHOW_OVERLAY) gate.style.display = "flex";  // keep visible until we can play
+          gate.style.display = "flex";  // show until audio is allowed
 
         } catch (err) {
           setStatus("init error");
-          log("err", `init error: ${err?.message || err}`);
         }
       })();
     </script>
