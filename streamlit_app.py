@@ -231,15 +231,15 @@ with b1:
                       "Hello. Welcome to the test demonstration.")
 
 with b2:
-    if st.button("മല്ലു-2", use_container_width=True):
+    if st.button("Test-2", use_container_width=True):
         if _need_session():
             st.warning("Start a session first.")
         else:
             send_echo(ss.session_id, ss.session_token,
-                      "I can talk in any language.  ഏന്തൊക്കെ ആണ് വിശേഷങൾ. കാലം പോയ പോക്കെ....")
+                      "I can talk in any language and also connect to Chat GPT.")
 
 with b3:
-    if st.button("测试-3", use_container_width=True):
+    if st.button("测试3", use_container_width=True):
         if _need_session():
             st.warning("Start a session first.")
         else:
