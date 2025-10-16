@@ -1,6 +1,5 @@
-# Hey Gen-Stage.2-Ver.6.1
+# Hey Gen-Stage.2-Ver.7 - OK
 # from openai import OpenAI
-
 
 import json
 import time
@@ -21,8 +20,8 @@ HEYGEN_API_KEY = st.secrets["HeyGen"]["heygen_api_key"]
 # ---------- Endpoints ----------
 BASE = "https://api.heygen.com/v1"
 API_LIST_AVATARS = f"{BASE}/streaming/avatar.list"    # GET  (x-api-key)
-API_STREAM_NEW   = f"{BASE}/streaming.new"            # POST (x-api-key) -> data: session_id, sdp.offer
-API_CREATE_TOKEN = f"{BASE}/streaming.create_token"   # POST (x-api-key) -> data: token/access_token
+API_STREAM_NEW   = f"{BASE}/streaming.new"            # POST (x-api-key) -> session_id + offer.sdp
+API_CREATE_TOKEN = f"{BASE}/streaming.create_token"   # POST (x-api-key) -> token
 API_STREAM_TASK  = f"{BASE}/streaming.task"           # POST (Bearer)
 API_STREAM_STOP  = f"{BASE}/streaming.stop"           # POST (Bearer)
 
@@ -89,7 +88,6 @@ def fetch_interactive_avatars():
                 "avatar_id": a.get("avatar_id"),
                 "default_voice": a.get("default_voice"),
             })
-    # dedupe
     seen, out = set(), []
     for it in items:
         aid = it.get("avatar_id")
@@ -107,20 +105,18 @@ names = [a["label"] for a in avatars]
 choice = st.selectbox("Choose an avatar", names, index=0)
 selected = next(a for a in avatars if a["label"] == choice)
 
-# ---------- Session helpers ----------    ## 16 Oct 3PM
+# ---------- Session helpers ----------
 def new_session(avatar_id: str, voice_id: str | None = None):
     """
     Return:
       {
         "session_id": str,
-        "offer_sdp": str,
-        "rtc_config": {"iceServers":[...] }
+        "offer_sdp": str,          # from data.offer.sdp OR data.sdp.sdp
+        "rtc_config": {"iceServers":[...]}
       }
     """
     payload = {"avatar_id": avatar_id}
-    # ✅ If we have a default voice id for this avatar, send it when creating the session
     if voice_id:
-        # Most tenants accept `voice_id`; some accept nested `voice` config.
         payload["voice_id"] = voice_id
 
     _, body, _ = _post_xapi(API_STREAM_NEW, payload)
@@ -142,7 +138,7 @@ def new_session(avatar_id: str, voice_id: str | None = None):
     if not sid or not offer_sdp:
         raise RuntimeError(f"Missing session_id or offer in response: {body}")
 
-    return {"session_id": sid, "offer_sdp": offer_sdp, "rtc_config": rtc_config}   #### 16 Oct 3PM
+    return {"session_id": sid, "offer_sdp": offer_sdp, "rtc_config": rtc_config}
 
 def create_session_token(session_id: str) -> str:
     _, body, _ = _post_xapi(API_CREATE_TOKEN, {"session_id": session_id})
@@ -173,14 +169,13 @@ ss.setdefault("offer_sdp", None)
 ss.setdefault("rtc_config", None)
 
 # ---------- Controls ----------
-c1, c2 = st.columns(2)           ### C1 updated on 16 Oct 3PM
+c1, c2 = st.columns(2)
 with c1:
     if st.button("Start / Restart", use_container_width=True):
         if ss.session_id and ss.session_token:
             stop_session(ss.session_id, ss.session_token)
             time.sleep(0.2)
 
-        # ✅ Pass selected["default_voice"] through
         payload = new_session(selected["avatar_id"], selected.get("default_voice"))
         sid = payload["session_id"]
         offer_sdp = payload["offer_sdp"]
@@ -192,7 +187,7 @@ with c1:
         ss.session_id = sid
         ss.session_token = tok
         ss.offer_sdp = offer_sdp
-        ss.rtc_config = rtc_config    ##Updated 16 Oct 3PM
+        ss.rtc_config = rtc_config
 
 with c2:
     if st.button("Stop", type="secondary", use_container_width=True):
@@ -203,22 +198,21 @@ with c2:
         ss.offer_sdp = None
         ss.rtc_config = None
 
-# ---------- Viewer embed (pure WebRTC; no SDK) ----------
+# ---------- Viewer embed ----------
 viewer_path = Path(__file__).parent / "viewer.html"
 if not viewer_path.exists():
     st.warning("viewer.html not found next to streamlit_app.py.")
 else:
-    if ss.session_id and ss.session_token and ss.offer_sdp:   ###Updated 16 Oct 3PM
+    if ss.session_id and ss.session_token and ss.offer_sdp:
         html = (
             viewer_path.read_text(encoding="utf-8")
             .replace("__SESSION_TOKEN__", ss.session_token)
             .replace("__AVATAR_NAME__", selected["label"])
             .replace("__SESSION_ID__", ss.session_id)
-            .replace("__OFFER_SDP__", json.dumps(ss.offer_sdp)[1:-1])
+            .replace("__OFFER_SDP__", json.dumps(ss.offer_sdp)[1:-1])  # raw newlines
             .replace("__RTC_CONFIG__", json.dumps(ss.rtc_config or {}))
-            .replace("__SHOW_AUDIO_OVERLAY__", "true")  # show the “Tap to enable sound” overlay
         )
-        components.html(html, height=680, scrolling=True)      ###Updated 16 Oct 3PM
+        components.html(html, height=600, scrolling=False)  # shorter (no debug pane)
     else:
         st.info("Click **Start / Restart** to open a session and load the viewer.")
 
@@ -251,4 +245,3 @@ with b3:
         else:
             send_echo(ss.session_id, ss.session_token,
                       "反馈我普通话发音是否正确。")
-
