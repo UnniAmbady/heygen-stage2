@@ -1,0 +1,85 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1"
+    />
+    <title>AI Avatar Viewer</title>
+    <style>
+      html, body {
+        margin: 0; padding: 0; height: 100%; width: 100%;
+        background: #0b0b0c; color: #eaeaea; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      }
+      .wrap {
+        display: flex; flex-direction: column; gap: 10px;
+        width: 100%; height: 100%; align-items: center; justify-content: flex-start;
+      }
+      .title {
+        font-size: 16px; text-align: center; margin-top: 6px; opacity: 0.9;
+      }
+      .stage {
+        width: 100%; max-width: 420px; aspect-ratio: 9 / 16;
+        background: #111; border-radius: 18px; overflow: hidden; border: 1px solid #222;
+        display: grid; place-items: center;
+      }
+      video {
+        width: 100%; height: 100%; object-fit: cover; display: block;
+      }
+      .status { font-size: 12px; opacity: 0.8; }
+    </style>
+    <!-- HeyGen Streaming SDK + LiveKit via CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@heygen/streaming-avatar/dist/index.global.js"></script>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="title">Avatar: <span id="aname"></span></div>
+      <div class="stage"><video id="video" playsinline autoplay muted></video></div>
+      <div class="status" id="status">waiting…</div>
+    </div>
+
+    <script>
+      // Values injected by app.py replace the placeholders below
+      const SESSION_TOKEN = "__SESSION_TOKEN__";
+      const AVATAR_NAME   = "__AVATAR_NAME__";
+
+      document.getElementById("aname").textContent = AVATAR_NAME;
+
+      const statusEl = document.getElementById("status");
+      function setStatus(t) { statusEl.textContent = t; }
+
+      (async () => {
+        try {
+          // Create client with the short-lived session token generated server-side
+          const avatar = new window.HeyGen.StreamingAvatar({ token: SESSION_TOKEN });
+
+          // The SDK will join the managed LiveKit room and emit stream events
+          avatar.on("stream.ready", (ev) => {
+            setStatus("connected");
+            const mediaStream = ev.stream; // MediaStream
+            const videoEl = document.getElementById("video");
+            videoEl.srcObject = mediaStream;
+            videoEl.muted = true; // viewer is output-only; mic muted
+            videoEl.play().catch(() => {});
+          });
+
+          avatar.on("stream.disconnected", () => setStatus("disconnected"));
+          avatar.on("error", (e) => setStatus(`error: ${e?.message || e}`));
+
+          // No need to create a session here — Python already created & started it.
+          // The SDK will bind to the active session token automatically.
+          setStatus("connecting…");
+
+          // (The SDK handles token binding internally for managed sessions.)
+          // If your SDK version requires explicit start with token, you can do:
+          // await avatar.connectWithToken(SESSION_TOKEN);
+
+        } catch (err) {
+          setStatus(`init error: ${err?.message || err}`);
+        }
+      })();
+    </script>
+  </body>
+</html>
