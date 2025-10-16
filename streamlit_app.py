@@ -163,7 +163,7 @@ with c1:
         # IMPORTANT: do NOT call /streaming.start here.
         # The browser SDK (viewer.html) will do SDP + start with this token.
         # Per your request, add a 1.0s delay like test5.py before loading the viewer:
-        time.sleep(1.0)
+        time.sleep(2.0) #changed from 1.0
 
         st.session_state.session_id = sid
         st.session_state.session_token = tok
