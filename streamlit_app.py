@@ -1,4 +1,4 @@
-# Hey Gen-Stage.2-Ver.5
+# Hey Gen-Stage.2-Ver.6.1
 # from openai import OpenAI
 
 
@@ -107,39 +107,42 @@ names = [a["label"] for a in avatars]
 choice = st.selectbox("Choose an avatar", names, index=0)
 selected = next(a for a in avatars if a["label"] == choice)
 
-# ---------- Session helpers ----------
-def new_session(avatar_id: str):
+# ---------- Session helpers ----------    ## 16 Oct 3PM
+def new_session(avatar_id: str, voice_id: str | None = None):
     """
-    Return dict with:
-      session_id: str
-      offer_sdp: str           (from data.offer.sdp OR data.sdp.sdp)
-      rtc_config: dict|None    (iceServers from data.ice_servers2/ice_servers)
+    Return:
+      {
+        "session_id": str,
+        "offer_sdp": str,
+        "rtc_config": {"iceServers":[...] }
+      }
     """
-    _, body, _ = _post_xapi(API_STREAM_NEW, {"avatar_id": avatar_id})
+    payload = {"avatar_id": avatar_id}
+    # ✅ If we have a default voice id for this avatar, send it when creating the session
+    if voice_id:
+        # Most tenants accept `voice_id`; some accept nested `voice` config.
+        payload["voice_id"] = voice_id
+
+    _, body, _ = _post_xapi(API_STREAM_NEW, payload)
     data = body.get("data") or {}
 
     sid = data.get("session_id")
-
-    # Robust parse: some responses use data.offer.sdp, others data.sdp.sdp
     offer_obj = data.get("offer") or data.get("sdp") or {}
     offer_sdp = offer_obj.get("sdp")
 
-    # Optional ICE servers in various fields (prefer ice_servers2 if present)
     ice2 = data.get("ice_servers2")
     ice1 = data.get("ice_servers")
-    rtc_config = None
     if isinstance(ice2, list) and ice2:
         rtc_config = {"iceServers": ice2}
     elif isinstance(ice1, list) and ice1:
         rtc_config = {"iceServers": ice1}
     else:
-        # fall back to public STUN; harmless if unused
         rtc_config = {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 
     if not sid or not offer_sdp:
         raise RuntimeError(f"Missing session_id or offer in response: {body}")
 
-    return {"session_id": sid, "offer_sdp": offer_sdp, "rtc_config": rtc_config}
+    return {"session_id": sid, "offer_sdp": offer_sdp, "rtc_config": rtc_config}   #### 16 Oct 3PM
 
 def create_session_token(session_id: str) -> str:
     _, body, _ = _post_xapi(API_CREATE_TOKEN, {"session_id": session_id})
@@ -170,27 +173,26 @@ ss.setdefault("offer_sdp", None)
 ss.setdefault("rtc_config", None)
 
 # ---------- Controls ----------
-c1, c2 = st.columns(2)
+c1, c2 = st.columns(2)           ### C1 updated on 16 Oct 3PM
 with c1:
     if st.button("Start / Restart", use_container_width=True):
         if ss.session_id and ss.session_token:
             stop_session(ss.session_id, ss.session_token)
             time.sleep(0.2)
 
-        payload = new_session(selected["avatar_id"])
+        # ✅ Pass selected["default_voice"] through
+        payload = new_session(selected["avatar_id"], selected.get("default_voice"))
         sid = payload["session_id"]
         offer_sdp = payload["offer_sdp"]
         rtc_config = payload["rtc_config"]
 
         tok = create_session_token(sid)
-
-        # small delay (mirrors your test5.py)
         time.sleep(1.0)
 
         ss.session_id = sid
         ss.session_token = tok
         ss.offer_sdp = offer_sdp
-        ss.rtc_config = rtc_config
+        ss.rtc_config = rtc_config    ##Updated 16 Oct 3PM
 
 with c2:
     if st.button("Stop", type="secondary", use_container_width=True):
@@ -206,16 +208,17 @@ viewer_path = Path(__file__).parent / "viewer.html"
 if not viewer_path.exists():
     st.warning("viewer.html not found next to streamlit_app.py.")
 else:
-    if ss.session_id and ss.session_token and ss.offer_sdp:
+    if ss.session_id and ss.session_token and ss.offer_sdp:   ###Updated 16 Oct 3PM
         html = (
             viewer_path.read_text(encoding="utf-8")
             .replace("__SESSION_TOKEN__", ss.session_token)
             .replace("__AVATAR_NAME__", selected["label"])
             .replace("__SESSION_ID__", ss.session_id)
-            .replace("__OFFER_SDP__", json.dumps(ss.offer_sdp)[1:-1])  # raw newlines
+            .replace("__OFFER_SDP__", json.dumps(ss.offer_sdp)[1:-1])
             .replace("__RTC_CONFIG__", json.dumps(ss.rtc_config or {}))
+            .replace("__SHOW_AUDIO_OVERLAY__", "true")  # show the “Tap to enable sound” overlay
         )
-        components.html(html, height=660, scrolling=True)
+        components.html(html, height=680, scrolling=True)      ###Updated 16 Oct 3PM
     else:
         st.info("Click **Start / Restart** to open a session and load the viewer.")
 
