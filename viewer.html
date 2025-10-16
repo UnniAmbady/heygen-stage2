@@ -3,56 +3,161 @@
   <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
-    <title>AI Avatar Viewer</title>
+    <title>AI Avatar Viewer (Debug)</title>
     <style>
       html,body{margin:0;padding:0;height:100%;width:100%;background:#0b0b0c;color:#eaeaea;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
       .wrap{display:flex;flex-direction:column;gap:10px;width:100%;height:100%;align-items:center;justify-content:flex-start}
       .title{font-size:16px;text-align:center;margin-top:6px;opacity:.9}
       .stage{width:100%;max-width:420px;aspect-ratio:9/16;background:#111;border-radius:18px;overflow:hidden;border:1px solid #222;display:grid;place-items:center}
       video{width:100%;height:100%;object-fit:cover;display:block}
-      .status{font-size:12px;opacity:.8}
+      .status{font-size:12px;opacity:.85}
+      .log{width:100%;max-width:420px;background:#0f0f10;border:1px solid #1f1f22;border-radius:12px;padding:8px;font-size:12px;line-height:1.35;overflow:auto;max-height:180px}
+      .muted{opacity:.7}
+      .ok{color:#9fff9f}
+      .warn{color:#ffd48a}
+      .err{color:#ff9f9f}
+      code{font-family:ui-monospace,SFMono-Regular,Consolas,Monaco,monospace}
     </style>
-    <!-- LiveKit + HeyGen Streaming Avatar SDK -->
+
+    <!-- LiveKit (safe to preload; HeyGen SDK uses it) -->
     <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@heygen/streaming-avatar/dist/index.global.js"></script>
   </head>
   <body>
     <div class="wrap">
       <div class="title">Avatar: <span id="aname"></span></div>
       <div class="stage"><video id="video" playsinline autoplay muted></video></div>
-      <div class="status" id="status">connecting…</div>
+      <div class="status" id="status">initializing…</div>
+      <div class="log" id="log"></div>
     </div>
 
     <script>
-      const SESSION_TOKEN="__SESSION_TOKEN__";
-      const AVATAR_NAME="__AVATAR_NAME__";
+      // Injected by Streamlit (placeholders replaced in app.py)
+      const SESSION_TOKEN = "__SESSION_TOKEN__";
+      const AVATAR_NAME   = "__AVATAR_NAME__";
+      // Optional (will be "unknown" unless you also pass it from app.py)
+      const SESSION_ID    = "__SESSION_ID__";
+
       document.getElementById("aname").textContent = AVATAR_NAME;
 
       const statusEl = document.getElementById("status");
+      const logEl = document.getElementById("log");
       function setStatus(t){ statusEl.textContent = t; }
+      function log(type, msg){
+        const div = document.createElement("div");
+        div.className = type;
+        div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        logEl.appendChild(div);
+        logEl.scrollTop = logEl.scrollHeight;
+        console[type === "err" ? "error" : type === "warn" ? "warn" : "log"](msg);
+      }
+      function short(s, n=6){ return (s||"").slice(0,n); }
+
+      log("muted", `avatar="${AVATAR_NAME}", sid="${short(SESSION_ID)}…", token="${short(SESSION_TOKEN,10)}…"`);
+      setStatus("loading SDK…");
+
+      // Robust loader: try global first, then ESM fallbacks from jsDelivr & unpkg
+      async function loadHeyGenSDK(){
+        if (window.HeyGen?.StreamingAvatar){
+          log("ok","Found window.HeyGen.StreamingAvatar (global UMD)");
+          return window.HeyGen.StreamingAvatar;
+        }
+
+        const candidates = [
+          // jsDelivr candidates
+          "https://cdn.jsdelivr.net/npm/@heygen/streaming-avatar/dist/index.global.js",   // UMD (should define window.HeyGen)
+          "https://cdn.jsdelivr.net/npm/@heygen/streaming-avatar/dist/index.esm.js",      // ESM
+          "https://cdn.jsdelivr.net/npm/@heygen/streaming-avatar",                        // package entry (may be ESM)
+          // unpkg fallbacks
+          "https://unpkg.com/@heygen/streaming-avatar/dist/index.global.js",
+          "https://unpkg.com/@heygen/streaming-avatar/dist/index.esm.js",
+          "https://unpkg.com/@heygen/streaming-avatar",
+        ];
+
+        // Try to load a UMD first via script tag, then ESM via dynamic import
+        // 1) UMD attempts
+        for (const url of candidates){
+          if (!/index\.global\.js$/.test(url)) continue;
+          try{
+            log("muted", `Loading UMD: ${url}`);
+            await new Promise((resolve, reject) => {
+              const s = document.createElement("script");
+              s.src = url; s.async = true; s.onload = resolve; s.onerror = reject;
+              document.head.appendChild(s);
+            });
+            if (window.HeyGen?.StreamingAvatar){
+              log("ok", `UMD ready from ${url}`);
+              return window.HeyGen.StreamingAvatar;
+            } else {
+              log("warn", `UMD loaded but window.HeyGen undefined from ${url}`);
+            }
+          }catch(e){
+            log("warn", `UMD load failed: ${url} :: ${e}`);
+          }
+        }
+
+        // 2) ESM attempts (require type=module dynamic import)
+        for (const url of candidates){
+          if (!/index\.esm\.js$/.test(url) && !/\/streaming-avatar$/.test(url)) continue;
+          try{
+            log("muted", `Importing ESM: ${url}`);
+            const mod = await import(/* @vite-ignore */ url);
+            const Cls = mod?.StreamingAvatar || mod?.default || (mod?.HeyGen && mod.HeyGen.StreamingAvatar);
+            if (Cls){
+              log("ok", `ESM ready from ${url}`);
+              return Cls;
+            } else {
+              log("warn", `ESM imported but class not found: ${url}`);
+            }
+          }catch(e){
+            log("warn", `ESM import failed: ${url} :: ${e}`);
+          }
+        }
+
+        throw new Error("HeyGen StreamingAvatar SDK not found on any CDN candidates.");
+      }
 
       (async () => {
-        try {
-          // The SDK will perform SDP negotiation + start using the token.
-          const avatar = new window.HeyGen.StreamingAvatar({ token: SESSION_TOKEN });
+        try{
+          const StreamingAvatar = await loadHeyGenSDK();
 
-          avatar.on("stream.ready", (ev) => {
+          setStatus("connecting…");
+          log("muted", "Creating StreamingAvatar with session token…");
+          const avatar = new StreamingAvatar({ token: SESSION_TOKEN });
+
+          avatar.on?.("stream.ready", (ev) => {
             const video = document.getElementById("video");
             video.srcObject = ev.stream;
             video.muted = true;
             video.play().catch(()=>{});
             setStatus("connected");
+            log("ok", "stream.ready — viewer attached.");
+            // Notify parent (Streamlit iframe) that we are ready
+            try { parent.postMessage({ heygen_viewer_ready: true }, "*"); } catch {}
           });
 
-          avatar.on("stream.disconnected", () => setStatus("disconnected"));
-          avatar.on("error", (e) => setStatus(`error: ${e?.message || e}`));
+          avatar.on?.("stream.disconnected", () => {
+            setStatus("disconnected");
+            log("warn", "stream.disconnected");
+            try { parent.postMessage({ heygen_viewer_ready: false }, "*"); } catch {}
+          });
 
-          // Explicit connect method for SDKs that require it:
-          if (typeof avatar.connectWithToken === "function") {
+          avatar.on?.("error", (e) => {
+            setStatus(`error`);
+            log("err", `SDK error: ${e?.message || e}`);
+          });
+
+          // Some SDK builds need explicit connect:
+          if (typeof avatar.connectWithToken === "function"){
+            log("muted", "Calling connectWithToken(token)…");
             await avatar.connectWithToken(SESSION_TOKEN);
+            log("ok","connectWithToken resolved.");
+          } else {
+            // UMD builds often auto-connect on construct; add a small wait for safety
+            await new Promise(r => setTimeout(r, 300));
           }
-        } catch (err) {
-          setStatus(`init error: ${err?.message || err}`);
+        }catch(err){
+          setStatus("init error");
+          log("err", `Init error: ${err?.message || err}`);
         }
       })();
     </script>
