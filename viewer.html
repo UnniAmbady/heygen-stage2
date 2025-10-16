@@ -11,7 +11,7 @@
       .stage{width:100%;max-width:420px;aspect-ratio:9/16;background:#111;border-radius:18px;overflow:hidden;border:1px solid #222;display:grid;place-items:center}
       video{width:100%;height:100%;object-fit:cover;display:block}
       .status{font-size:12px;opacity:.85}
-      .log{width:100%;max-width:420px;background:#0f0f10;border:1px solid #1f1f22;border-radius:12px;padding:8px;font-size:12px;line-height:1.35;overflow:auto;max-height:220px}
+      .log{width:100%;max-width:420px;background:#0f0f10;border:1px solid #1f1f22;border-radius:12px;padding:8px;font-size:12px;line-height:1.35;overflow:auto;max-height:240px}
       .muted{opacity:.7}
       .ok{color:#9fff9f}
       .warn{color:#ffd48a}
@@ -32,7 +32,8 @@
       const SESSION_TOKEN = "__SESSION_TOKEN__";
       const AVATAR_NAME   = "__AVATAR_NAME__";
       const SESSION_ID    = "__SESSION_ID__";
-      const OFFER_SDP     = "__OFFER_SDP__"; // raw SDP text from streaming.new
+      const OFFER_SDP     = "__OFFER_SDP__";    // raw text from API
+      const RTC_CONFIG    = __RTC_CONFIG__ || {}; // {"iceServers":[...]} if provided
 
       document.getElementById("aname").textContent = AVATAR_NAME;
 
@@ -50,16 +51,15 @@
       }
 
       log("muted", `sid="${short(SESSION_ID)}…", token="${short(SESSION_TOKEN,12)}…"`);
+      log("muted", `rtc_config=${JSON.stringify(RTC_CONFIG)}`);
 
       // ---- DIRECT WEBRTC, NO SDK ----
-      // 1) RTCPeerConnection with default STUN; HeyGen/LiveKit provides ICE in its SDP.
-      const pc = new RTCPeerConnection();
+      const pc = new RTCPeerConnection(RTC_CONFIG);
 
-      // Attach remote tracks
-      const video = document.getElementById("video");
       pc.ontrack = (ev) => {
         const [stream] = ev.streams;
         if (stream) {
+          const video = document.getElementById("video");
           video.srcObject = stream;
           video.muted = true;
           video.play().catch(()=>{});
@@ -90,7 +90,7 @@
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
 
-          // Wait for ICE gathering to complete so we send a full SDP
+          // Wait for ICE to finish gathering local candidates for a full SDP answer
           await new Promise((resolve) => {
             if (pc.iceGatheringState === "complete") return resolve();
             const check = () => {
@@ -100,8 +100,7 @@
               }
             };
             pc.addEventListener("icegatheringstatechange", check);
-            // safety timeout
-            setTimeout(resolve, 1500);
+            setTimeout(resolve, 1500); // safety
           });
 
           setStatus("starting session…");
@@ -130,8 +129,6 @@
           }
 
           setStatus("waiting for media…");
-          // A small grace period for first frames
-          setTimeout(()=>log("muted","ready for tasks"), 500);
 
         } catch (err) {
           setStatus("init error");
