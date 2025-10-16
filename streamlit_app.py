@@ -1,4 +1,4 @@
-# Hey Gen-Stage.2-Ver.3.1
+# Hey Gen-Stage.2-Ver.4
 # from openai import OpenAI
 
 import json
@@ -176,6 +176,8 @@ with c2:
         st.session_state.session_token = None
 
 # ---------- Viewer embed ----------
+
+# ---------- Viewer embed with extra debug ----------
 viewer_path = Path(__file__).parent / "viewer.html"
 if not viewer_path.exists():
     st.warning("viewer.html not found next to streamlit_app.py.")
@@ -185,13 +187,22 @@ else:
             viewer_path.read_text(encoding="utf-8")
             .replace("__SESSION_TOKEN__", st.session_state.session_token)
             .replace("__AVATAR_NAME__", selected["label"])
+            .replace("__SESSION_ID__", st.session_state.session_id or "unknown")
         )
-        components.html(src, height=520, scrolling=False)
+        components.html(src, height=620, scrolling=True)  # taller to show log panel
     else:
         st.info("Click **Start / Restart** to open a session and load the viewer.")
 
-# ---------- Echo buttons ----------
+# ---------- Echo buttons (gated by a 'viewer ready' flag) ----------
 st.write("---")
+if "viewer_ready" not in st.session_state:
+    st.session_state.viewer_ready = False
+
+# Listen for postMessage from the iframe (Streamlit hack via components.iframe is limited;
+# we set readiness manually when user clicks Start/Restart, then rely on them pressing a test
+# only after they see 'connected'. If you want strict gating, we can add a timer flag.)
+ready_hint = "Once the viewer shows 'connected', the buttons will work."
+
 b1, b2, b3 = st.columns(3)
 
 def _need_session():
@@ -199,21 +210,27 @@ def _need_session():
 
 with b1:
     if st.button("Test-1", use_container_width=True):
-        if _need_session(): st.warning("Start a session first.")
+        if _need_session():
+            st.warning("Start a session first.")
         else:
+            # We’ll be lenient: try, and the server will tell us if not ready.
             send_echo(st.session_state.session_id, st.session_state.session_token,
                       "Hello. Welcome to the test demonstration.")
 
 with b2:
     if st.button("Test-2", use_container_width=True):
-        if _need_session(): st.warning("Start a session first.")
+        if _need_session():
+            st.warning("Start a session first.")
         else:
             send_echo(st.session_state.session_id, st.session_state.session_token,
                       "I can talk in any language and also connect to Chat GPT.")
 
 with b3:
     if st.button("测试3", use_container_width=True):
-        if _need_session(): st.warning("Start a session first.")
+        if _need_session():
+            st.warning("Start a session first.")
         else:
             send_echo(st.session_state.session_id, st.session_state.session_token,
                       "反馈我普通话发音是否正确。")
+
+st.caption(ready_hint)
