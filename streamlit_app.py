@@ -27,18 +27,35 @@ API_STREAM_STOP    = "https://api.heygen.com/v1/streaming.stop"          # stop 
 
 @st.cache_data(ttl=300)
 def fetch_avatars():
-    r = requests.get(API_LIST_AVATARS, headers=HEADERS, timeout=30)
+    """Return a normalized list of avatar {id, name} dicts."""
+    url = API_LIST_AVATARS
+    r = requests.get(url, headers=HEADERS, timeout=30)
     r.raise_for_status()
-    data = r.json().get("data", {})
-    # Normalize: list may be under "avatars" or "list" depending on account
-    items = data.get("list") or data.get("avatars") or []
-    # Keep only essentials for dropdown
-    return [
-        {"id": item.get("id") or item.get("avatar_id"),
-         "name": item.get("name") or item.get("avatar_name") or f"Avatar {idx+1}"}
-        for idx, item in enumerate(items)
-        if (item.get("id") or item.get("avatar_id"))
-    ]
+
+    # The new API returns a top-level list (not a dict)
+    try:
+        data = r.json()
+    except Exception:
+        st.error("Invalid JSON response from HeyGen.")
+        return []
+
+    if isinstance(data, dict):
+        items = data.get("data") or data.get("list") or data.get("avatars") or []
+    elif isinstance(data, list):
+        items = data
+    else:
+        st.error("Unexpected response format from HeyGen.")
+        return []
+
+    avatars = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        avatar_id = item.get("id") or item.get("avatar_id")
+        avatar_name = item.get("name") or item.get("avatar_name") or f"Avatar {idx+1}"
+        if avatar_id:
+            avatars.append({"id": avatar_id, "name": avatar_name})
+    return avatars
 
 avatars = fetch_avatars()
 if not avatars:
