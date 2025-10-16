@@ -1,6 +1,5 @@
-# Hey Gen-Stage.2-Ver.4
+# Hey Gen-Stage.2-Ver.5
 # from openai import OpenAI
-
 import json
 import time
 from pathlib import Path
@@ -20,8 +19,8 @@ HEYGEN_API_KEY = st.secrets["HeyGen"]["heygen_api_key"]
 # ---------- Endpoints ----------
 BASE = "https://api.heygen.com/v1"
 API_LIST_AVATARS = f"{BASE}/streaming/avatar.list"    # GET  (x-api-key)
-API_STREAM_NEW   = f"{BASE}/streaming.new"            # POST (x-api-key)
-API_CREATE_TOKEN = f"{BASE}/streaming.create_token"   # POST (x-api-key)
+API_STREAM_NEW   = f"{BASE}/streaming.new"            # POST (x-api-key) -> offer.sdp
+API_CREATE_TOKEN = f"{BASE}/streaming.create_token"   # POST (x-api-key) -> session token
 API_STREAM_TASK  = f"{BASE}/streaming.task"           # POST (Bearer)
 API_STREAM_STOP  = f"{BASE}/streaming.stop"           # POST (Bearer)
 
@@ -38,7 +37,7 @@ def headers_bearer(token: str):
         "Content-Type": "application/json",
     }
 
-# ---------- HTTP helpers (show raw error bodies) ----------
+# ---------- HTTP helpers (surface server body on error) ----------
 def _get(url, params=None):
     r = requests.get(url, headers=HEADERS_XAPI, params=params, timeout=45)
     raw = r.text
@@ -52,8 +51,7 @@ def _get(url, params=None):
     return r.status_code, body, raw
 
 def _post_xapi(url, payload=None):
-    data = json.dumps(payload or {})
-    r = requests.post(url, headers=HEADERS_XAPI, data=data, timeout=60)
+    r = requests.post(url, headers=HEADERS_XAPI, data=json.dumps(payload or {}), timeout=60)
     raw = r.text
     try:
         body = r.json()
@@ -65,8 +63,7 @@ def _post_xapi(url, payload=None):
     return r.status_code, body, raw
 
 def _post_bearer(url, token, payload=None):
-    data = json.dumps(payload or {})
-    r = requests.post(url, headers=headers_bearer(token), data=data, timeout=60)
+    r = requests.post(url, headers=headers_bearer(token), data=json.dumps(payload or {}), timeout=60)
     raw = r.text
     try:
         body = r.json()
@@ -77,24 +74,20 @@ def _post_bearer(url, token, payload=None):
         r.raise_for_status()
     return r.status_code, body, raw
 
-# ---------- Avatars (parse `data`, ACTIVE only) ----------
+# ---------- Avatars (ACTIVE only) ----------
 @st.cache_data(ttl=300)
 def fetch_interactive_avatars():
     _, body, _ = _get(API_LIST_AVATARS)
     data = body.get("data") or []
     items = []
     for a in data:
-        if not isinstance(a, dict):
-            continue
-        if a.get("status") == "ACTIVE":
+        if isinstance(a, dict) and a.get("status") == "ACTIVE":
             items.append({
                 "label": a.get("pose_name") or a.get("avatar_id"),
                 "avatar_id": a.get("avatar_id"),
                 "default_voice": a.get("default_voice"),
-                "preview": a.get("normal_preview"),
-                "is_public": a.get("is_public"),
             })
-    # de-dupe by avatar_id
+    # dedupe
     seen, out = set(), []
     for it in items:
         aid = it.get("avatar_id")
@@ -112,20 +105,22 @@ names = [a["label"] for a in avatars]
 choice = st.selectbox("Choose an avatar", names, index=0)
 selected = next(a for a in avatars if a["label"] == choice)
 
-# ---------- Server-side session helpers ----------
-def create_session(avatar_id: str) -> str:
-    payload = {"avatar_id": avatar_id}
-    _, body, _ = _post_xapi(API_STREAM_NEW, payload)
-    sid = (body.get("data") or {}).get("session_id")
-    if not sid:
-        raise RuntimeError(f"Missing session_id: {body}")
-    return sid
+# ---------- Session helpers ----------
+def new_session(avatar_id: str):
+    """Return (session_id, offer_sdp)."""
+    _, body, _ = _post_xapi(API_STREAM_NEW, {"avatar_id": avatar_id})
+    data = body.get("data") or {}
+    sid = data.get("session_id")
+    offer = (data.get("offer") or {}).get("sdp")
+    if not sid or not offer:
+        raise RuntimeError(f"Missing session_id or offer in response: {body}")
+    return sid, offer
 
 def create_session_token(session_id: str) -> str:
     _, body, _ = _post_xapi(API_CREATE_TOKEN, {"session_id": session_id})
     tok = (body.get("data") or {}).get("token") or (body.get("data") or {}).get("access_token")
     if not tok:
-        raise RuntimeError(f"Missing token: {body}")
+        raise RuntimeError(f"Missing token in response: {body}")
     return tok
 
 def send_echo(session_id: str, session_token: str, text: str):
@@ -143,78 +138,66 @@ def stop_session(session_id: str, session_token: str):
         pass
 
 # ---------- Streamlit state ----------
-if "session_id" not in st.session_state:
-    st.session_state.session_id = None
-if "session_token" not in st.session_state:
-    st.session_state.session_token = None
+ss = st.session_state
+ss.setdefault("session_id", None)
+ss.setdefault("session_token", None)
+ss.setdefault("offer_sdp", None)
 
 # ---------- Controls ----------
 c1, c2 = st.columns(2)
 with c1:
     if st.button("Start / Restart", use_container_width=True):
-        # close old
-        if st.session_state.session_id and st.session_state.session_token:
-            stop_session(st.session_state.session_id, st.session_state.session_token)
+        if ss.session_id and ss.session_token:
+            stop_session(ss.session_id, ss.session_token)
             time.sleep(0.2)
 
-        sid = create_session(selected["avatar_id"])
+        sid, offer_sdp = new_session(selected["avatar_id"])
         tok = create_session_token(sid)
 
-        # IMPORTANT: do NOT call /streaming.start here.
-        # The browser SDK (viewer.html) will do SDP + start with this token.
-        # Per your request, add a 1.0s delay like test5.py before loading the viewer:
-        time.sleep(2.0) #changed from 1.0
+        # small delay like your test5.py; also helps Streamlit Cloud iframes
+        time.sleep(1.0)
 
-        st.session_state.session_id = sid
-        st.session_state.session_token = tok
+        ss.session_id = sid
+        ss.session_token = tok
+        ss.offer_sdp = offer_sdp
 
 with c2:
     if st.button("Stop", type="secondary", use_container_width=True):
-        if st.session_state.session_id and st.session_state.session_token:
-            stop_session(st.session_state.session_id, st.session_state.session_token)
-        st.session_state.session_id = None
-        st.session_state.session_token = None
+        if ss.session_id and ss.session_token:
+            stop_session(ss.session_id, ss.session_token)
+        ss.session_id = None
+        ss.session_token = None
+        ss.offer_sdp = None
 
-# ---------- Viewer embed ----------
-
-# ---------- Viewer embed with extra debug ----------
+# ---------- Viewer embed (pure WebRTC; no SDK) ----------
 viewer_path = Path(__file__).parent / "viewer.html"
 if not viewer_path.exists():
     st.warning("viewer.html not found next to streamlit_app.py.")
 else:
-    if st.session_state.session_id and st.session_state.session_token:
-        src = (
+    if ss.session_id and ss.session_token and ss.offer_sdp:
+        html = (
             viewer_path.read_text(encoding="utf-8")
-            .replace("__SESSION_TOKEN__", st.session_state.session_token)
+            .replace("__SESSION_TOKEN__", ss.session_token)
             .replace("__AVATAR_NAME__", selected["label"])
-            .replace("__SESSION_ID__", st.session_state.session_id or "unknown")
+            .replace("__SESSION_ID__", ss.session_id)
+            .replace("__OFFER_SDP__", json.dumps(ss.offer_sdp)[1:-1])  # keep raw newlines
         )
-        components.html(src, height=620, scrolling=True)  # taller to show log panel
+        components.html(html, height=640, scrolling=True)
     else:
         st.info("Click **Start / Restart** to open a session and load the viewer.")
 
-# ---------- Echo buttons (gated by a 'viewer ready' flag) ----------
+# ---------- Echo buttons ----------
 st.write("---")
-if "viewer_ready" not in st.session_state:
-    st.session_state.viewer_ready = False
-
-# Listen for postMessage from the iframe (Streamlit hack via components.iframe is limited;
-# we set readiness manually when user clicks Start/Restart, then rely on them pressing a test
-# only after they see 'connected'. If you want strict gating, we can add a timer flag.)
-ready_hint = "Once the viewer shows 'connected', the buttons will work."
-
 b1, b2, b3 = st.columns(3)
-
 def _need_session():
-    return not (st.session_state.session_id and st.session_state.session_token)
+    return not (ss.session_id and ss.session_token and ss.offer_sdp)
 
 with b1:
     if st.button("Test-1", use_container_width=True):
         if _need_session():
             st.warning("Start a session first.")
         else:
-            # We’ll be lenient: try, and the server will tell us if not ready.
-            send_echo(st.session_state.session_id, st.session_state.session_token,
+            send_echo(ss.session_id, ss.session_token,
                       "Hello. Welcome to the test demonstration.")
 
 with b2:
@@ -222,7 +205,7 @@ with b2:
         if _need_session():
             st.warning("Start a session first.")
         else:
-            send_echo(st.session_state.session_id, st.session_state.session_token,
+            send_echo(ss.session_id, ss.session_token,
                       "I can talk in any language and also connect to Chat GPT.")
 
 with b3:
@@ -230,7 +213,6 @@ with b3:
         if _need_session():
             st.warning("Start a session first.")
         else:
-            send_echo(st.session_state.session_id, st.session_state.session_token,
+            send_echo(ss.session_id, ss.session_token,
                       "反馈我普通话发音是否正确。")
 
-st.caption(ready_hint)
