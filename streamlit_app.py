@@ -1,6 +1,6 @@
 # HeyGen — Stage.2.Ver.7 base + Voice Echo (Start/Stop) + Debug box
 # Sequence: streaming.new -> streaming.create_token -> sleep(1s) -> viewer.start
-# UI kept aligned with your working app (title, Start/Restart, Stop, Test-1, etc.)
+# UI aligned with your working app (title, Start/Restart, Stop, Test-1).
 
 import json
 import time
@@ -275,18 +275,28 @@ with b1:
             send_echo(ss.session_id, ss.session_token,
                       "Hello. Welcome to the test demonstration.")
 
-# Voice Start / Stop (Echo) in next two buttons
+# ----- Voice Start / Stop (Echo) with placeholder teardown -----
+
+# where we mount the webrtc component
+if "webrtc_slot" not in st.session_state:
+    st.session_state.webrtc_slot = st.empty()
+if "webrtc_ctx" not in st.session_state:
+    st.session_state.webrtc_ctx = None
+
 with b2:
     if st.button("Voice Start", use_container_width=True):
         ss["voice_run"] = True
         debug("[voice] start requested")
+
 with b3:
     if st.button("Voice Stop", use_container_width=True):
         ss["voice_run"] = False
-        ctx = ss.get("webrtc_ctx")
-        if ctx and getattr(ctx, "state", None) and ctx.state.playing:
-            ctx.stop()
-        ss.webrtc_ctx = None
+        # Remove the component from the page — this cleanly stops the stream
+        try:
+            st.session_state.webrtc_slot.empty()
+        except Exception:
+            pass
+        st.session_state.webrtc_ctx = None
         debug("[voice] stop requested")
 
 with b4:
@@ -307,7 +317,7 @@ if _HAS_WEBRTC and ss.get("voice_run") and ss.session_id and ss.session_token:
 
     class EchoProcessor(AudioProcessorBase):
         """
-        Accumulates PCM16; whenever we detect ~800ms of pause or 4s max buffer,
+        Accumulates PCM16; when ~800ms pause or 4s max buffer,
         flush -> transcribe -> speak back via streaming.task (repeat).
         """
         def __init__(self, speak_cb):
@@ -350,8 +360,9 @@ if _HAS_WEBRTC and ss.get("voice_run") and ss.session_id and ss.session_token:
                 if in_rate != self.sample_rate:
                     dur = pcm16.shape[0] / in_rate
                     new_len = int(dur * self.sample_rate)
+                    # numpy.interp over sample index
                     pcm16 = np.interp(
-                        np.linspace(0, pcm16.shape[0], new_len, endpoint=False),
+                        np.linspace(0, pcm16.shape[0] - 1, new_len),
                         np.arange(pcm16.shape[0]),
                         pcm16.astype(np.float32),
                     ).astype(np.int16)
@@ -378,7 +389,6 @@ if _HAS_WEBRTC and ss.get("voice_run") and ss.session_id and ss.session_token:
             from openai import OpenAI
             client = OpenAI(api_key=OPENAI_API_KEY)
             # write temporary wav
-            import tempfile, wave
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                 path = tmp.name
             with wave.open(path, "wb") as w:
@@ -396,13 +406,16 @@ if _HAS_WEBRTC and ss.get("voice_run") and ss.session_id and ss.session_token:
 
     # bind a processor instance (avoid referencing session_state inside worker thread)
     processor_instance = EchoProcessor(speak_back)
-    ss.webrtc_ctx = webrtc_streamer(
-        key="mic-echo",
-        mode=WebRtcMode.SENDONLY,
-        audio_processor_factory=lambda: processor_instance,
-        media_stream_constraints={"audio": True, "video": False},
-        async_processing=False,
-    )
+
+    # Mount inside the placeholder; store context if you want to inspect it
+    with st.session_state.webrtc_slot.container():
+        st.session_state.webrtc_ctx = webrtc_streamer(
+            key="mic-echo",
+            mode=WebRtcMode.SENDONLY,
+            audio_processor_factory=lambda: processor_instance,
+            media_stream_constraints={"audio": True, "video": False},
+            async_processing=False,
+        )
     st.caption("Voice echo is running…")
 
 # -------------- Debug box (disabled) --------------
