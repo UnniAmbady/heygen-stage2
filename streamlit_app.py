@@ -1,4 +1,4 @@
-# HeyGen — Stage.2.Ver.7 base + Voice Echo (Start/Stop) + Debug box
+# HeyGen — Ver-10 base + Voice Echo (Start/Stop) + Debug box
 # Sequence: streaming.new -> streaming.create_token -> sleep(1s) -> viewer.start
 # UI aligned with your working app (title, Start/Restart, Stop, Test-1).
 
