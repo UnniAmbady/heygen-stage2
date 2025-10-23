@@ -112,7 +112,7 @@
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
 
-          // Wait for ICE to finish gathering local candidates
+          // Wait for ICE to finish gathering local candidates (same timing as your working file)
           await new Promise((resolve) => {
             if (pc.iceGatheringState === "complete") return resolve();
             const check = () => {
@@ -144,6 +144,7 @@
 
         } catch (err) {
           setStatus("init error");
+          console.error(err);
         }
       })();
     </script>
