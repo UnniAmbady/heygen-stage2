@@ -1,5 +1,6 @@
 # HeyGen — Stage.2.Ver.7 base + Voice Echo (Start/Stop) + Debug box
-# Follows your working flow & timings (new -> create_token -> sleep(1s) -> viewer.start)
+# Sequence: streaming.new -> streaming.create_token -> sleep(1s) -> viewer.start
+# UI kept aligned with your working app (title, Start/Restart, Stop, Test-1, etc.)
 
 import json
 import time
@@ -28,8 +29,6 @@ st.markdown("""
   .block-container { padding-top:.5rem; }
   .ctrl-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
   .ctrl-row .stButton > button { height:40px; padding:0 12px; font-size:.9rem; border-radius:10px; }
-  .ctrl-row .grow { flex: 0 0 auto; }
-  .fix-left { width: auto; }
   iframe { border:none; border-radius:16px; }
   /* hide internal start of streamlit-webrtc to avoid the flashing red button */
   div.st-webrtc > div:has(button) { display:none !important; }
@@ -80,8 +79,8 @@ ss.setdefault("debug_buf", [])
 def debug(msg: str):
     ss.debug_buf.append(str(msg))
     # Trim to keep the box responsive
-    if len(ss.debug_buf) > 400:
-        ss.debug_buf[:] = ss.debug_buf[-400:]
+    if len(ss.debug_buf) > 500:
+        ss.debug_buf[:] = ss.debug_buf[-500:]
 
 # ------------- HTTP helpers --------------
 def _get(url, params=None):
@@ -211,78 +210,38 @@ ss.setdefault("rtc_config", None)
 
 # -------------- Controls row --------------
 st.write("")
-ctrl = st.container()
-with ctrl:
-    c = st.columns([1,1,1,1,1,1,1], gap="small")
+c1, c2 = st.columns(2)
+with c1:
+    if st.button("Start / Restart", use_container_width=True):
+        if ss.session_id and ss.session_token:
+            stop_session(ss.session_id, ss.session_token)
+            time.sleep(0.2)
 
-    # Start/Restart (as in working file)
-    with c[0]:
-        if st.button("Start / Restart", use_container_width=True):
-            if ss.session_id and ss.session_token:
-                stop_session(ss.session_id, ss.session_token)
-                time.sleep(0.2)
+        debug("Step 1: streaming.new")
+        payload = new_session(selected["avatar_id"], selected.get("default_voice"))
+        sid, offer_sdp, rtc_config = payload["session_id"], payload["offer_sdp"], payload["rtc_config"]
 
-            debug("Step 1: streaming.new")
-            payload = new_session(selected["avatar_id"], selected.get("default_voice"))
-            sid, offer_sdp, rtc_config = payload["session_id"], payload["offer_sdp"], payload["rtc_config"]
+        debug("Step 2: streaming.create_token")
+        tok = create_session_token(sid)
 
-            debug("Step 2: streaming.create_token")
-            tok = create_session_token(sid)
+        debug("Step 3: sleep 1.0s before viewer")
+        time.sleep(1.0)
 
-            debug("Step 3: sleep 1.0s before viewer")
-            time.sleep(1.0)
+        ss.session_id = sid
+        ss.session_token = tok
+        ss.offer_sdp = offer_sdp
+        ss.rtc_config = rtc_config
+        debug(f"[ready] session_id={sid[:8]}…")
 
-            ss.session_id = sid
-            ss.session_token = tok
-            ss.offer_sdp = offer_sdp
-            ss.rtc_config = rtc_config
-            debug(f"[ready] session_id={sid[:8]}…")
-
-    with c[1]:
-        if st.button("Stop", type="secondary", use_container_width=True):
-            if ss.session_id and ss.session_token:
-                stop_session(ss.session_id, ss.session_token)
-            ss.session_id = None
-            ss.session_token = None
-            ss.offer_sdp = None
-            ss.rtc_config = None
-            debug("[stopped] session cleared")
-
-    # Test-1 must remain identical behavior
-    with c[2]:
-        if st.button("Test-1", use_container_width=True):
-            if not (ss.session_id and ss.session_token and ss.offer_sdp):
-                st.warning("Start a session first.")
-            else:
-                send_echo(ss.session_id, ss.session_token,
-                          "Hello. Welcome to the test demonstration.")
-
-    # Voice Start / Stop (Echo)
-    with c[3]:
-        if st.button("Voice Start", use_container_width=True):
-            ss["voice_run"] = True
-            debug("[voice] start requested")
-    with c[4]:
-        if st.button("Voice Stop", use_container_width=True):
-            ss["voice_run"] = False
-            # stop webrtc if running
-            ctx = ss.get("webrtc_ctx")
-            if ctx and getattr(ctx, "state", None) and ctx.state.playing:
-                ctx.stop()
-            ss.webrtc_ctx = None
-            debug("[voice] stop requested")
-
-    # Quick reset
-    with c[5]:
-        if st.button("Reset", use_container_width=True):
-            for k in ("session_id","session_token","offer_sdp","rtc_config","voice_run"):
-                ss[k] = None
-            ss.debug_buf.clear()
-            st.rerun()
-
-    # filler
-    with c[6]:
-        st.write("")
+with c2:
+    if st.button("Stop", type="secondary", use_container_width=True):
+        if ss.session_id and ss.session_token:
+            stop_session(ss.session_id, ss.session_token)
+        ss.session_id = None
+        ss.session_token = None
+        ss.offer_sdp = None
+        ss.rtc_config = None
+        debug("[stopped] session cleared")
 
 # ----------- Viewer embed (exactly as working) -----------
 viewer_path = Path(__file__).parent / "viewer.html"
@@ -301,6 +260,44 @@ else:
         components.html(html, height=620, scrolling=False)
     else:
         st.info("Click **Start / Restart** to open a session and load the viewer.")
+
+# ---------- Buttons row (keep Test-1 identical) ----------
+st.write("---")
+b1, b2, b3, b4, b5 = st.columns(5)
+def _need_session():
+    return not (ss.session_id and ss.session_token and ss.offer_sdp)
+
+with b1:
+    if st.button("Test-1", use_container_width=True):
+        if _need_session():
+            st.warning("Start a session first.")
+        else:
+            send_echo(ss.session_id, ss.session_token,
+                      "Hello. Welcome to the test demonstration.")
+
+# Voice Start / Stop (Echo) in next two buttons
+with b2:
+    if st.button("Voice Start", use_container_width=True):
+        ss["voice_run"] = True
+        debug("[voice] start requested")
+with b3:
+    if st.button("Voice Stop", use_container_width=True):
+        ss["voice_run"] = False
+        ctx = ss.get("webrtc_ctx")
+        if ctx and getattr(ctx, "state", None) and ctx.state.playing:
+            ctx.stop()
+        ss.webrtc_ctx = None
+        debug("[voice] stop requested")
+
+with b4:
+    if st.button("Reset", use_container_width=True):
+        for k in ("session_id","session_token","offer_sdp","rtc_config","voice_run"):
+            ss[k] = None
+        ss.debug_buf.clear()
+        st.rerun()
+
+with b5:
+    st.write("")
 
 # ----------------- Voice Echo -----------------
 # Uses streamlit-webrtc to capture mic; simple pause-based chunking; Whisper (if key present).
@@ -355,7 +352,7 @@ if _HAS_WEBRTC and ss.get("voice_run") and ss.session_id and ss.session_token:
                     new_len = int(dur * self.sample_rate)
                     pcm16 = np.interp(
                         np.linspace(0, pcm16.shape[0], new_len, endpoint=False),
-                        np.arange(pcm16.shape[0"]),
+                        np.arange(pcm16.shape[0]),
                         pcm16.astype(np.float32),
                     ).astype(np.int16)
 
@@ -380,6 +377,8 @@ if _HAS_WEBRTC and ss.get("voice_run") and ss.session_id and ss.session_token:
         try:
             from openai import OpenAI
             client = OpenAI(api_key=OPENAI_API_KEY)
+            # write temporary wav
+            import tempfile, wave
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                 path = tmp.name
             with wave.open(path, "wb") as w:
@@ -407,4 +406,4 @@ if _HAS_WEBRTC and ss.get("voice_run") and ss.session_id and ss.session_token:
     st.caption("Voice echo is running…")
 
 # -------------- Debug box (disabled) --------------
-st.text_area("Debug", value="\n".join(ss.debug_buf), height=180, disabled=True)
+st.text_area("Debug", value="\n".join(ss.debug_buf), height=200, disabled=True)
